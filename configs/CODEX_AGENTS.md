@@ -66,7 +66,10 @@ lead or one direct subagent.
 - Cross-vendor delegation is explicit-only; do not silently launch another
   vendor's CLI.
 
-Use `gpt-5.6-terra` as the default cheap Codex tier. Spark is opt-in only because
+Use `gpt-5.6-luna` as the default cheap Codex tier — the catalog's own upgrade
+lineage puts Luna, not Terra, in the cheap slot. Luna carries the same tool
+surface, context window, and effort ladder as Terra, minus the `ultra` effort
+level, which a bounded subagent has no use for. Spark is opt-in only because
 availability depends on the user's plan; never assume it exists.
 
 ## Delivery Completion

@@ -17,7 +17,7 @@ def test_codex_cheap_agents_are_valid_and_non_recursive():
         assert profile["name"]
         assert profile["description"]
         assert profile["developer_instructions"]
-        assert profile["model"] == "gpt-5.6-terra"
+        assert profile["model"] == "gpt-5.6-luna"
         instructions = profile["developer_instructions"].lower()
         assert "spawn another agent" in instructions
         assert "more than once" in instructions

@@ -1,6 +1,6 @@
 name = "clade_cheap_worker"
 description = "Use proactively for one bounded, low-risk implementation with explicit file ownership and a deterministic verifier. Do not use for architecture, ambiguous requirements, migrations, security-sensitive work, or broad refactors."
-model = "gpt-5.6-terra"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
