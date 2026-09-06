@@ -101,8 +101,11 @@ environment even if checkout, tests, or posting fails.
 
 - Installed Clade plugin skills are namespaced. Invoke this workflow as
   `$clade:delivery`, and use `$clade:<skill-name>` for companion workflows.
-- Read the closest applicable `AGENTS.md`; read legacy `CLAUDE.md` only when it
-  is trusted repository guidance.
+- Read the closest applicable agent instructions. Codex probes
+  `AGENTS.override.md` before `AGENTS.md` at each scope and does not merge
+  them, so where an override exists that scope's `AGENTS.md` is not in effect.
+  `CLAUDE.md` is Clade's legacy fallback rather than a filename Codex resolves;
+  read it only when it is trusted repository guidance.
 - Codex-managed worktrees may begin at detached HEAD. A local detached commit
   is valid, but create/attach an owned branch or preserve a reachable Clade ref
   before the runtime deletes the worktree.

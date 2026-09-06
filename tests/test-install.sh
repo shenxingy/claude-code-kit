@@ -722,6 +722,118 @@ else
   pass "report skips subdirectories"
 fi
 
+# ─── Suite 8b: AGENTS.override.md shadows the managed block ──────────
+#
+# Codex resolves agent instructions first-filename-wins with NO merge:
+# AGENTS.override.md is probed before AGENTS.md at home scope
+# (codex-rs/codex-home/src/instructions/mod.rs:10) and at project scope
+# (codex-rs/core/src/agents_md.rs:42), verified at rust-v0.153.4. So the
+# careful merge above can write the Clade block into ~/.codex/AGENTS.md and
+# Codex will never read a byte of it — silently, because every other signal
+# says the install succeeded.
+#
+# Report only, exactly like the orphan sweep above: AGENTS.override.md is the
+# user's own global instruction file and install.sh must neither delete nor
+# move it. The merge still runs, so removing the override later works.
+
+section "Warns when ~/.codex/AGENTS.override.md shadows the managed block"
+
+# No override, no warning — the report must not be noise on a clean install.
+if grep -q "AGENTS.override.md" "$SANDBOX/install-1.log"; then
+  fail "clean install prints no override warning" \
+    "warned with no AGENTS.override.md present"
+else
+  pass "clean install prints no override warning"
+fi
+
+CODEX_OVERRIDE="$CODEX_DIR/AGENTS.override.md"
+printf '# My own global Codex instructions\n\n- keep me verbatim\n' > "$CODEX_OVERRIDE"
+override_before="$(cat "$CODEX_OVERRIDE")"
+
+install_log_override="$SANDBOX/install-override.log"
+if bash "$SRC/install.sh" </dev/null >"$install_log_override" 2>&1; then
+  pass "install.sh exits 0 when AGENTS.override.md is present"
+else
+  fail "install.sh exits 0 when AGENTS.override.md is present" \
+    "see $install_log_override"
+  tail -30 "$install_log_override"
+fi
+
+if grep -qF "AGENTS.override.md" "$install_log_override"; then
+  pass "install warning names AGENTS.override.md"
+else
+  fail "install warning names AGENTS.override.md" "see $install_log_override"
+fi
+
+# Naming the file is not enough. A reader who is not told the consequence has
+# no reason to act, and the whole defect is that the failure is silent.
+if grep -qiE 'will not load|not be loaded|never loaded' "$install_log_override"; then
+  pass "install warning states the managed block will not load"
+else
+  fail "install warning states the managed block will not load" \
+    "see $install_log_override"
+fi
+
+# The warning has to be findable in a long install log.
+if grep -qE '^(WARNING|Warning):.*AGENTS\.override\.md' "$install_log_override"; then
+  pass "override warning is announced as a warning, not buried in prose"
+else
+  fail "override warning is announced as a warning, not buried in prose" \
+    "see $install_log_override"
+fi
+
+# Load-bearing: report only. Never delete, never move, never rewrite.
+if [[ -f "$CODEX_OVERRIDE" && "$(cat "$CODEX_OVERRIDE")" == "$override_before" ]]; then
+  pass "AGENTS.override.md survives the install byte-for-byte"
+else
+  fail "AGENTS.override.md survives the install byte-for-byte" \
+    "install.sh must report the shadowing, not resolve it"
+fi
+
+if compgen -G "$CODEX_DIR/AGENTS.override.md.*" >/dev/null 2>&1; then
+  fail "install leaves no AGENTS.override.md backup/rename behind" \
+    "$(ls "$CODEX_DIR"/AGENTS.override.md.* 2>/dev/null | tr '\n' ' ')"
+else
+  pass "install leaves no AGENTS.override.md backup/rename behind"
+fi
+
+# ...and the merge still happens, so deleting the override later is the fix.
+override_block_count=$(grep -c '<!-- BEGIN CLADE ADAPTIVE DELEGATION -->' \
+  "$CODEX_DIR/AGENTS.md" 2>/dev/null || true)
+override_block_count=${override_block_count:-0}
+if [[ "$override_block_count" -eq 1 ]]; then
+  pass "managed block is still merged into AGENTS.md while shadowed"
+else
+  fail "managed block is still merged into AGENTS.md while shadowed" \
+    "block found $override_block_count times (want 1)"
+fi
+
+# An empty override file does not shadow anything Codex reads as instructions,
+# so warning about it would be the noise this suite's first case forbids.
+: > "$CODEX_OVERRIDE"
+install_log_empty="$SANDBOX/install-override-empty.log"
+bash "$SRC/install.sh" </dev/null >"$install_log_empty" 2>&1 || true
+if grep -q "AGENTS.override.md" "$install_log_empty"; then
+  fail "an empty AGENTS.override.md draws no warning"
+else
+  pass "an empty AGENTS.override.md draws no warning"
+fi
+
+# `[[ -s X ]]` is true for a DIRECTORY, so a size test alone misfires on one.
+# Codex resolves a candidate only when its metadata says is_file(), at both
+# scopes, so a directory of that name shadows nothing and must not warn.
+rm -f "$CODEX_OVERRIDE"
+mkdir -p "$CODEX_OVERRIDE"
+install_log_dir="$SANDBOX/install-override-dir.log"
+bash "$SRC/install.sh" </dev/null >"$install_log_dir" 2>&1 || true
+if grep -q "AGENTS.override.md" "$install_log_dir"; then
+  fail "a directory named AGENTS.override.md draws no warning" \
+    "[[ -s ]] is true for a directory; Codex resolves regular files only"
+else
+  pass "a directory named AGENTS.override.md draws no warning"
+fi
+rm -rf "$CODEX_OVERRIDE"
+
 # ─── Suite 9: install.sh stays node-free ─────────────────────────────
 #
 # The web UI build belongs where the server is, not in the installer: this

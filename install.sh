@@ -81,6 +81,32 @@ fi
 } > "$CODEX_AGENTS"
 rm -f "$CODEX_TMP"
 
+# Codex resolves agent instructions first-filename-wins with NO merge:
+# AGENTS.override.md is probed BEFORE AGENTS.md at home scope
+# (codex-rs/codex-home/src/instructions/mod.rs:10) and at project scope
+# (codex-rs/core/src/agents_md.rs:42), verified at rust-v0.153.4. An override
+# sitting beside the file merged just above means Codex reads that instead and
+# never sees a byte of the managed block — silently, because every other
+# signal, this installer included, reports success.
+#
+# Report only, the same policy as the unowned-file sweep further down: this is
+# the user's own global instruction file. Name the conflict, leave the file
+# alone, and still write AGENTS.md so removing the override is the whole fix.
+CODEX_OVERRIDE="$CODEX_DIR/AGENTS.override.md"
+# -f as well as -s: `[[ -s dir ]]` is true for a directory, and Codex resolves
+# a candidate only when its metadata says is_file(). A size test alone warns
+# about a directory Codex would never read.
+if [[ -f "$CODEX_OVERRIDE" && -s "$CODEX_OVERRIDE" ]]; then
+  echo ""
+  echo "WARNING: $CODEX_OVERRIDE shadows $CODEX_AGENTS"
+  echo "  Codex resolves AGENTS.override.md before AGENTS.md at this scope and"
+  echo "  does not merge the two, so the Clade managed block just written to"
+  echo "  AGENTS.md will not load while that override file exists."
+  echo "  Clade never deletes or moves it. To activate the block, copy it into"
+  echo "  AGENTS.override.md or remove that file."
+  echo ""
+fi
+
 # ─── 4b. Install MCP Server ─────────────────────────────────────────────
 _echo() { printf '%s\n' "$*"; }
 
