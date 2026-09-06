@@ -127,6 +127,100 @@ if [[ "$CATASTROPHIC_RM" == true ]]; then
   exit 0
 fi
 
+# ─── Recursive delete on a target the guardian cannot resolve ─────────
+#
+# The rule above matches the TEXT of the target, which is what a human types
+# and not what an agent writes. Measured 2026-09-05: a recursive delete against
+# $BUILD_DIR/, "$BUILD_DIR"/, ${OUT}/, $OUT/*, $(pwd)/* or a bare glob was
+# ALLOWED by both guardians while every spelled-out form was blocked.
+#
+# What makes it dangerous is the shell lifecycle, not the regex. Each Bash tool
+# call is a fresh shell, so a variable assigned in an earlier call is unset in
+# this one and the target expands to the filesystem root — the very string the
+# rule above exists to stop. GNU rm's --preserve-root does not save it either,
+# because the expanded argument is root-plus-star rather than root.
+#
+# Two answers, because the two shapes differ in whether anything can be made
+# safe:
+#   a name  → rewrite $NAME to ${NAME:?...}. A set variable runs unchanged; an
+#             unset one aborts naming itself. A correct command pays nothing.
+#   no name → refuse. $(...) and a bare glob are decided at run time and there
+#             is nothing to make required.
+#
+# Ordering matters: this runs AFTER the catastrophic-path block, so $HOME and
+# the named system paths stay blocked rather than being rewritten into a
+# "required" variable that is always set.
+
+# A delete written inside a single-quoted string is text, not a command, and
+# rewriting it would corrupt the string. Count the quotes that open before the
+# first rm; an odd number means we are inside one.
+_pre_rm=$(printf '%s' "$COMMAND" | sed -E 's/(\brm\b).*/\1/')
+_quotes=$(printf '%s' "$_pre_rm" | tr -cd "'" | wc -c | tr -d ' ')
+if (( _quotes % 2 == 0 )); then
+  # Shell-owned names are always set, so requiring them proves nothing. $HOME
+  # is on this list and is also blocked outright above; that block wins.
+  _SHELL_OWNED=" HOME PWD OLDPWD TMPDIR XDG_RUNTIME_DIR CLAUDE_PROJECT_DIR "
+  _unresolved_var=""
+  _refuse_reason=""
+
+  while IFS= read -r _stmt; do
+    [[ -z "$_stmt" ]] && continue
+    [[ -n "$_unresolved_var" || -n "$_refuse_reason" ]] && break
+    echo "$_stmt" | grep -qE '\brm\b.*-[a-zA-Z]*r' || continue
+    echo "$_stmt" | grep -qE '\brm\b.*-[a-zA-Z]*f' || continue
+
+    # Everything after the rm, minus its flags, is a candidate target.
+    _after=$(printf '%s' "$_stmt" | sed -E 's/^.*\brm\b//')
+    while IFS= read -r _tok; do
+      [[ -z "$_tok" ]] && continue
+      case "$_tok" in -*) continue ;; esac
+      _bare=${_tok//\"/}
+
+      # No name to require: the value appears at run time.
+      case "$_bare" in
+        *'$('*|*'`'*)
+          _refuse_reason="a command substitution decides the target at run time"
+          break ;;
+      esac
+      case "$_bare" in
+        '*'|'./'*'*'|'./*'|'.'|'./')
+          _refuse_reason="a bare glob resolves against whatever the working directory happens to be"
+          break ;;
+      esac
+
+      # $NAME or ${NAME} at the head of the target.
+      _var=$(printf '%s' "$_bare" | sed -nE 's/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?.*/\1/p')
+      [[ -z "$_var" ]] && continue
+      [[ "$_SHELL_OWNED" == *" $_var "* ]] && continue
+      # Assigned in this same command, so this shell will have it.
+      if echo "$COMMAND" | grep -qE "(^|[[:space:];&|(])(export[[:space:]]+)?${_var}="; then
+        continue
+      fi
+      _unresolved_var="$_var"
+      break
+    done <<< "$(printf '%s' "$_after" | tr ' \t' '\n\n')"
+  done <<< "$RM_STATEMENTS"
+
+  if [[ -n "$_refuse_reason" ]]; then
+    jq -n \
+      --arg cmd "$COMMAND" \
+      --arg why "$_refuse_reason" \
+      '{"decision":"block","reason":("Recursive delete refused: " + $why + ". Name the directory explicitly, or run it manually after checking what it expands to. Command: " + $cmd)}'
+    exit 0
+  fi
+
+  if [[ -n "$_unresolved_var" ]]; then
+    _guard_msg="pre-tool-guardian: refusing a recursive delete on unset ${_unresolved_var}"
+    _SAFE_RM=${COMMAND//\$\{${_unresolved_var}\}/\$\{${_unresolved_var}:?${_guard_msg}\}}
+    _SAFE_RM=${_SAFE_RM//\$${_unresolved_var}/\$\{${_unresolved_var}:?${_guard_msg}\}}
+    jq -n \
+      --arg safer "$_SAFE_RM" \
+      '{"decision":"allow","updatedInput":{"command":$safer}}'
+    exit 0
+  fi
+fi
+
+
 # ─── Force push to main/master ────────────────────────────────────────
 # Force-pushing to shared branches destroys history. Block unconditionally.
 # Handles flags before or after branch name: git push --force origin main, git push origin main -f
