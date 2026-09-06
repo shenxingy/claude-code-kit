@@ -87,10 +87,18 @@ real native semantics.
 
 ## State and Guidance
 
-Native Codex workflows read `AGENTS.md` first and fall back to `CLAUDE.md` for
-older Clade-enabled repositories. New runtime state is written under `.clade/`
-or `~/.clade/`; native workflows may read legacy Claude state when migrating an
-existing project but do not create new vendor-specific state.
+Codex resolves agent instructions per scope, first filename wins, with no
+merge between them: `AGENTS.override.md` is probed before `AGENTS.md` at both
+home scope (`~/.codex/`) and project scope, so wherever an override exists that
+directory's `AGENTS.md` is not read at all. `CLAUDE.md` is Clade's own legacy
+fallback for older Clade-enabled repositories, not a filename Codex itself
+resolves. Because the managed block is merged into `~/.codex/AGENTS.md`,
+`install.sh` warns when `~/.codex/AGENTS.override.md` would shadow it; it
+reports the conflict and never deletes or moves the override.
+
+New runtime state is written under `.clade/` or `~/.clade/`; native workflows
+may read legacy Claude state when migrating an existing project but do not
+create new vendor-specific state.
 
 Every generated native skill also ends with the same delivery boundary: a
 writable task cannot report `DONE` with task-owned uncommitted changes, and a

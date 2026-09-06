@@ -37,6 +37,93 @@ def _rewrite(command: str) -> dict:
     }
 
 
+# Kept deliberately in step with configs/hooks/pre-tool-guardian.sh.
+# configs/codex-migration.json records the two as a parity pair, and
+# tests/test-pre-tool-guardian.sh now feeds one command to both hooks and fails
+# when their verdicts differ — which is how the drift below was found. Until
+# 2026-09-05 this mirror matched only /, ~ and $HOME, so it allowed a recursive
+# delete of /home, /etc, /usr, /var, /sys, /proc and /boot that the shell hook
+# blocked; and it split on LINES where the shell splits on statements, so a
+# home path merely sharing a line with a benign delete read differently here.
+_DANGEROUS_TILDE = r"(?:^|[\s=])~[A-Za-z0-9._-]*(?:/|\s|$)"
+_DANGEROUS_NAMED = (
+    r"(?:" + _DANGEROUS_TILDE + r"|\$\{?HOME\}?"
+    r"|(?:/home|/etc|/usr|/var|/sys|/proc|/boot)\b)"
+)
+_DANGEROUS_ROOT = r"(?:^|\s)/(?:\s|$|\*)"
+
+# Names the shell always provides, so requiring them proves nothing. HOME is
+# on this list and is also caught by _DANGEROUS_NAMED; that block wins.
+_SHELL_OWNED = frozenset(
+    {"HOME", "PWD", "OLDPWD", "TMPDIR", "XDG_RUNTIME_DIR", "CLAUDE_PROJECT_DIR"}
+)
+
+
+def _statements(command: str) -> list[str]:
+    """Split the way the shell hook does — on ; | & — not on newlines.
+
+    Per-line matching was too coarse in both directions; the reasoning is
+    recorded at length in pre-tool-guardian.sh. Matching per statement means
+    every condition has to be met by the same statement.
+    """
+    return re.split(r"[;|&\n]", command)
+
+
+def _recursive_force(statement: str) -> bool:
+    return bool(
+        re.search(r"\brm\b[^\n]*(?:-[a-zA-Z]*r|--recursive\b)", statement)
+        and re.search(r"\brm\b[^\n]*(?:-[a-zA-Z]*f|--force\b)", statement)
+    )
+
+
+def _delete_targets(statement: str) -> list[str]:
+    after = re.sub(r"^.*\brm\b", "", statement, count=1)
+    return [token for token in after.split() if not token.startswith("-")]
+
+
+def _unresolved_delete(command: str) -> tuple[str, str] | None:
+    """A recursive delete whose target this guardian cannot resolve.
+
+    Returns ("refuse", why) when nothing can be made safe — a command
+    substitution or a bare glob is decided at run time and offers no name to
+    require — or ("rewrite", name) when there is a name to make required.
+
+    The danger is the shell lifecycle rather than the text: each Bash tool call
+    is a fresh shell, so a variable assigned in an earlier call is unset in this
+    one and the target expands to the filesystem root.
+    """
+    # A delete written inside a single-quoted string is text, not a command,
+    # and rewriting it would corrupt the string it sits in.
+    head = re.split(r"\brm\b", command, maxsplit=1)[0]
+    if head.count("'") % 2 == 1:
+        return None
+
+    for statement in _statements(command):
+        if not _recursive_force(statement):
+            continue
+        for token in _delete_targets(statement):
+            bare = token.replace('"', "")
+            if "$(" in bare or "`" in bare:
+                return ("refuse", "a command substitution decides the target at run time")
+            if re.fullmatch(r"\.?/?\*+|\.|\./", bare):
+                return (
+                    "refuse",
+                    "a bare glob resolves against whatever the working "
+                    "directory happens to be",
+                )
+            match = re.match(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", bare)
+            if not match:
+                continue
+            name = match.group(1)
+            if name in _SHELL_OWNED:
+                continue
+            # Assigned in this same command, so this shell will have it.
+            if re.search(rf"(?:^|[\s;&|(])(?:export\s+)?{re.escape(name)}=", command):
+                continue
+            return ("rewrite", name)
+    return None
+
+
 def evaluate(command: str) -> dict | None:
     lower = command.lower()
     dev_mode = (Path.home() / ".clade" / ".dev-mode").exists()
@@ -47,16 +134,28 @@ def evaluate(command: str) -> dict | None:
                     f"Database migration detected ({pattern}). Review and run it manually."
                 )
 
-    rm_lines = [line for line in command.splitlines() if re.search(r"\brm\b", line)]
-    for line in rm_lines:
-        recursive = re.search(r"\brm\b[^\n]*(?:-[a-zA-Z]*r|--recursive\b)", line)
-        force = re.search(r"\brm\b[^\n]*(?:-[a-zA-Z]*f|--force\b)", line)
-        dangerous = re.search(
-            r'''(?:^|\s)["']?(?:/|~|\$HOME|\$\{HOME\})(?:\s|$|/|\*|["'])''',
-            line,
+    for statement in _statements(command):
+        if not _recursive_force(statement):
+            continue
+        if re.search(_DANGEROUS_NAMED, statement) or re.search(_DANGEROUS_ROOT, statement):
+            return _deny(f"Catastrophic recursive deletion blocked: {statement.strip()}")
+
+    unresolved = _unresolved_delete(command)
+    if unresolved is not None:
+        kind, detail = unresolved
+        if kind == "refuse":
+            return _deny(
+                f"Recursive delete refused: {detail}. Name the directory explicitly, "
+                f"or run it manually after checking what it expands to. Command: {command}"
+            )
+        guard = f"pre_tool_guardian: refusing a recursive delete on unset {detail}"
+        safer = command.replace("${" + detail + "}", "${" + detail + ":?" + guard + "}")
+        safer = re.sub(
+            r"\$" + re.escape(detail) + r"\b",
+            "${" + detail + ":?" + guard + "}",
+            safer,
         )
-        if recursive and force and dangerous:
-            return _deny(f"Catastrophic recursive deletion blocked: {line.strip()}")
+        return _rewrite(safer)
 
     is_push = bool(re.search(r"\bgit\s+push\b", command))
     has_force = bool(

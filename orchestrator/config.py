@@ -309,7 +309,7 @@ _SETTINGS_DEFAULTS = {
             "capabilities": {},
         },
     },
-    "codex_cheap_model": "gpt-5.6-terra",  # cheap bounded-task tier; Spark remains an explicit opt-in
+    "codex_cheap_model": "gpt-5.6-luna",  # cheap bounded-task tier; Spark remains an explicit opt-in
     "codex_strong_model": "gpt-5.6-sol",  # low-readiness / critical-path tier
     # Usage tracking (multi-machine ccusage aggregation — see usage_tracker.py)
     "usage_poll_enabled": True,         # poll ccusage on this machine and store locally

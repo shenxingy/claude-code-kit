@@ -795,7 +795,7 @@ Codex state databases, and the wider field. The yield is the same shape as the
 and what the sweep actually found is places where **this repository's own
 record is wrong**. The four below were reproduced by hand before filing.
 
-- [ ] 🔴 **Both guardians allow every recursive delete an agent actually
+- [x] 🔴 **Both guardians allow every recursive delete an agent actually
       writes.** Measured with a probe that feeds real `PreToolUse` payloads to
       `configs/hooks/pre-tool-guardian.sh` and
       `plugins/clade/hooks/pre_tool_guardian.py`: both block the literal
@@ -817,8 +817,23 @@ record is wrong**. The four below were reproduced by hand before filing.
       rewrite and should be refused. Needs the mirrored change in the Codex
       hook and cases in `tests/test-pre-tool-guardian.sh`, which today contains
       no unset-variable or glob-target case at all.
+      DONE 2026-09-06. Both guardians now answer a delete they cannot
+      resolve: a target headed by an unassigned `$NAME` is rewritten to
+      `${NAME:?…}` through the same `updatedInput` shape the force-push
+      branch already used, so a set variable runs untouched and an unset
+      one aborts naming itself; a command substitution or a bare glob is
+      refused, because neither offers a name to make required. A delete
+      inside single quotes is left alone. `tests/test-pre-tool-guardian.sh`
+      grew a REWRITE verdict and thirteen cases; sixteen assertions failed
+      against the unfixed hooks before any code changed. A sweep of
+      seventeen ordinary commands produced no new block.
+      Known limitation, pinned as its own case rather than left to
+      surprise someone: the rm rule has always been blind to command
+      position, so delete text inside a DOUBLE-quoted string is rewritten
+      too. Fixing that means command-position parsing for `rm` while
+      keeping `echo $(rm …)` blocked, which is a larger change than this.
 
-- [ ] 🟡 **The two guardians have drifted, and the parity pair is untested.**
+- [x] 🟡 **The two guardians have drifted, and the parity pair is untested.**
       The shell hook blocks a recursive delete of `/home`, `/etc`, `/usr`,
       `/var`, `/sys`, `/proc`, `/boot`; the Codex mirror's regex covers only
       root, `~`, `$HOME` and `${HOME}` at token start, so it allows what the
@@ -827,8 +842,15 @@ record is wrong**. The four below were reproduced by hand before filing.
       checks that pairing, but nothing feeds one command to both hooks and
       compares verdicts. That table-driven test is the durable fix; aligning
       the regex alone would drift again.
+      DONE 2026-09-06, and the drift was wider than filed. Beside the
+      named system paths, the Python mirror split commands on LINES where
+      the shell hook splits on statements, so a home path merely sharing a
+      line with a benign delete read differently on the two surfaces. Both
+      now split on `;|&`. `assert_parity` feeds one command to both hooks
+      and fails when the verdicts differ; twenty-two commands run through
+      it, seven of which failed before the fix.
 
-- [ ] 🟡 **"Codex cannot fan out" is false, and it is written down three
+- [x] 🟡 **"Codex cannot fan out" is false, and it is written down three
       times.** `~/.codex/state_5.sqlite` holds two `source='exec'` parent
       threads that spawned depth-1 children on CLI 0.145.0, using Clade's own
       roles: `clade_cheap_explorer`
@@ -857,8 +879,18 @@ record is wrong**. The four below were reproduced by hand before filing.
       JSONL — only the `wait` item appears, with an empty
       `receiver_thread_ids` — so a supervisor watching the event stream cannot
       see its worker's children and must read `~/.codex/state_5.sqlite`.
+      DONE 2026-09-06. `subagents` is CONDITIONAL with the condition in
+      its `sources` entry — the resolved model's catalog
+      `multi_agent_version`, and under v1 delegation being authorised in
+      the prompt or `AGENTS.md`. The gate did not weaken: REQUIRED admits
+      SUPPORTED only, so a run that must subdivide is still refused on a
+      route we cannot prove; only the PREFERRED degradation changed, from
+      `unsupported` to `conditional`. The test that forbade CONDITIONAL
+      now asserts the condition names `multi_agent_version` and that the
+      falsified reason cannot come back. Three of its assertions failed
+      against the old value first.
 
-- [ ] 🔵 **The cheap Codex tier is set to the middle tier.** Both the live
+- [x] 🔵 **The cheap Codex tier is set to the middle tier.** Both the live
       catalog and upstream's bundled one encode `gpt-5.4-mini` ("small, fast,
       cost-efficient") → `gpt-5.6-luna` and `gpt-5.4` ("strong model for
       everyday coding") → `gpt-5.6-terra`, so OpenAI's own lineage puts Luna in
@@ -872,8 +904,11 @@ record is wrong**. The four below were reproduced by hand before filing.
       surface, the same context window and the same effort ladder minus
       `ultra`, which a bounded subagent has no use for. Per-token prices are
       not in either catalog, so the saving is not quantified here.
+      DONE 2026-09-06. `codex_cheap_model` and both `configs/codex-agents`
+      profiles are `gpt-5.6-luna`; `codex_strong_model` stays Sol. The
+      generated settings reference was regenerated rather than hand-edited.
 
-- [ ] 🟡 **`AGENTS.override.md` outranks `AGENTS.md`, so the managed block can
+- [x] 🟡 **`AGENTS.override.md` outranks `AGENTS.md`, so the managed block can
       be installed and never read.** Codex resolves instructions
       first-filename-wins with no merge, at both scopes:
       `LOCAL_AGENTS_MD_FILENAME = "AGENTS.override.md"` is probed before
@@ -889,8 +924,20 @@ record is wrong**. The four below were reproduced by hand before filing.
       states the order as AGENTS.md then CLAUDE.md, two skill surface files
       repeat it, and `configs/skills/delivery/scripts/git_context.py` implements
       that flat probe in code.
+      DONE 2026-09-06. `install.sh` warns when a non-empty override sits
+      beside the file it just merged, names it, states that the managed
+      block will not load, and neither deletes nor moves it — the merge
+      still runs, so removing the override is the whole fix. It tests `-f`
+      as well as `-s`, because `[[ -s dir ]]` is true for a directory that
+      Codex would never resolve. Three assertions in
+      `tests/test-install.sh` failed against the unfixed installer, while
+      the clean-install and file-preservation cases passed either way. The
+      precedence is now stated in `docs/codex.md`, its Chinese copy, the
+      two skill surface files, and implemented in `git_context.py`, which
+      probes the override first and skips that directory's `AGENTS.md`
+      when it finds one.
 
-- [ ] 🟡 **The Codex `SessionStart` hook misses `clear`, and the reason it
+- [x] 🟡 **The Codex `SessionStart` hook misses `clear`, and the reason it
       matters is already written down on the Claude side.**
       `configs/settings-hooks.json:6` runs on `startup|clear|fork` and carries
       the rationale in its own description field: clear and fork mint a new
@@ -900,8 +947,17 @@ record is wrong**. The four below were reproduced by hand before filing.
       lesson, learned on one surface, not carried to the other. Fix is the
       matcher plus an assertion in `orchestrator/tests/test_codex_plugin.py`,
       which today pins only which event names exist, not their matchers.
+      DONE 2026-09-06, with a correction worth keeping. The first attempt
+      at this — by a loop worker — set the matcher to `startup|clear|fork`,
+      dropping `resume` and `compact` and adding `fork`, and wrote a
+      docstring asserting that Codex has no `resume` source. The released
+      enum says otherwise: `SessionStartSource` in
+      `codex-rs/hooks/src/events/session_start.rs` at `rust-v0.153.4` has
+      exactly `Startup`, `Resume`, `Clear`, `Compact`, and no `fork`. The
+      matcher is `startup|resume|clear|compact`, and the test cites the
+      enum so the next reader does not have to re-derive it.
 
-- [ ] 🔵 **A fabrication record went stale and now suppresses a real feature.**
+- [x] 🔵 **A fabrication record went stale and now suppresses a real feature.**
       `docs/research/2026-08-29-ecosystem-audit.md:51` records `PostModelSwitch`
       and `--restricted` as fabrications that do not exist in CLI 2.1.236. Both
       shipped since: `grep -ac` against the installed 2.1.258 binary counts 38
@@ -911,6 +967,9 @@ record is wrong**. The four below were reproduced by hand before filing.
       does the inverse of its purpose. Amended in place this round; the general
       rule is that a "does not exist" finding needs a version stamp, because
       absence is only ever true of one build.
+      DONE 2026-09-05 in the review PR: the entry carries a dated
+      amendment naming both shipped features and the versions that shipped
+      them.
 
 ---
 

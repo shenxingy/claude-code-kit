@@ -355,12 +355,25 @@ class CodexProvider(WorkerProvider):
             "repository_write": CapabilityState.SUPPORTED,
             "structured_events": CapabilityState.UNSUPPORTED,
             "native_resume": CapabilityState.UNSUPPORTED,
-            # Was CONDITIONAL with no condition expressed anywhere, which read
-            # as "sometimes, depending". It does not: `codex exec` spawns no
-            # sub-agent, so a run that needs to subdivide cannot on this
-            # runtime. UNSUPPORTED is what makes a `subagents: required` task
-            # refuse this route instead of being admitted and then serialised.
-            "subagents": CapabilityState.UNSUPPORTED,
+            # UNSUPPORTED here was wrong, and the reason it carried — "codex
+            # exec has no headless sub-agent spawn" — was false. It was
+            # reasoned from the absence of a delegation FLAG, which is not the
+            # absence of the capability. Measured 2026-09-05: this host's
+            # ~/.codex/state_5.sqlite holds `source='exec'` parent threads with
+            # depth-1 children using Clade's own roles, and a live
+            # `codex exec --json` run reproduced one on CLI 0.153.4. In
+            # released upstream, `collab_tools_enabled`
+            # (codex-rs/core/src/tools/spec_plan.rs:647 at rust-v0.153.4)
+            # branches only on the resolved model's multi_agent_version; the
+            # session source is read once, to ask whether the caller is itself
+            # a subagent, never to separate headless from interactive.
+            #
+            # CONDITIONAL is not a shrug as long as the condition is written
+            # down, which is what the source below does. It also keeps the
+            # enforcement honest: resolve_capabilities refuses a REQUIRED
+            # capability that is not SUPPORTED, so a run that must subdivide
+            # still will not be admitted on a route we cannot prove.
+            "subagents": CapabilityState.CONDITIONAL,
             "hooks": CapabilityState.SUPPORTED,
             "status_renderer": CapabilityState.CONDITIONAL,
             "native_rate_limits": CapabilityState.CONDITIONAL,
@@ -368,7 +381,10 @@ class CodexProvider(WorkerProvider):
             "reasoning_control": CapabilityState.SUPPORTED,
         }
         return CapabilitySet(states, {**{name: source for name in states}, **{
-            "subagents": f"{source}: codex exec has no headless sub-agent spawn",
+            "subagents": f"{source}: depends on the resolved model's catalog "
+                         "multi_agent_version (sol/terra carry v2, luna v1) and, "
+                         "under v1, on delegation being authorised in the prompt "
+                         "or AGENTS.md",
             "status_renderer": f"{source}: native status_line is fixed-field; "
                                "a command-backed renderer needs a patched build",
             "native_rate_limits": f"{source}: depends on the account plan",

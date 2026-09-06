@@ -75,9 +75,16 @@ First 与 Terse 的约束以持久 Codex guidance 表达，但不声称与 syste
 
 ## State 与仓库指引
 
-原生 Codex workflows 优先读取 `AGENTS.md`，旧项目没有该文件时再读取
-`CLAUDE.md`。新的运行状态写入 `.clade/` 或 `~/.clade/`；迁移已有项目时
-可以读取 legacy Claude state，但不会创建新的 vendor-specific state。
+Codex 按作用域解析 agent 指令，同一作用域内第一个命中的文件名胜出，且两者
+之间不做合并：`AGENTS.override.md` 在 home scope（`~/.codex/`）与 project
+scope 都排在 `AGENTS.md` 之前，因此只要某个目录存在 override，该目录的
+`AGENTS.md` 根本不会被读取。`CLAUDE.md` 只是 Clade 自己为旧版 Clade 项目保留
+的 legacy fallback，并不是 Codex 会去解析的文件名。托管块合并进
+`~/.codex/AGENTS.md`，所以当 `~/.codex/AGENTS.override.md` 会遮蔽它时
+`install.sh` 会发出警告：只报告冲突，绝不删除或移动该 override 文件。
+
+新的运行状态写入 `.clade/` 或 `~/.clade/`；迁移已有项目时可以读取 legacy
+Claude state，但不会创建新的 vendor-specific state。
 
 每个生成的 native skill 末尾也有同一条 delivery boundary：可写任务不能在
 task-owned 改动尚未提交时报告 `DONE`；涉及 live URL 或已部署服务的请求也不能

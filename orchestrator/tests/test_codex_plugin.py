@@ -182,6 +182,30 @@ def test_codex_hooks_use_supported_command_handlers() -> None:
                 assert "${PLUGIN_ROOT}" in hook["command"]
 
 
+def test_codex_session_start_matcher_covers_every_fresh_session_source() -> None:
+    """A cleared Codex session got no context, and only this file can say so.
+
+    Codex's ``SessionStartSource`` enum has exactly four values — ``startup``,
+    ``resume``, ``clear``, ``compact`` (``codex-rs/hooks/src/events/session_start.rs``
+    at ``rust-v0.153.4``; the schema builder at ``hooks/src/schema.rs`` emits the
+    same four). ``fork`` is a Claude Code source and is not one of them, so
+    listing it here would match nothing.
+
+    The matcher omitted ``clear``, which is the source that discards the
+    injected context while keeping the process alive — exactly the case the
+    hook exists for. The Claude side learned this already and wrote the reason
+    into ``configs/settings-hooks.json``; the lesson had not crossed to the
+    plugin. Pinning the string is what makes the omission visible, because the
+    surrounding test pins only which event names exist.
+    """
+    hooks = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+    matchers = [group.get("matcher") for group in hooks["SessionStart"]]
+    assert matchers == ["startup|resume|clear|compact"], (
+        "SessionStart must fire on every source Codex emits; "
+        f"found {matchers}"
+    )
+
+
 def test_codex_session_context_emits_read_only_repository_guidance(tmp_path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / "AGENTS.md").write_text("# Test guidance\n", encoding="utf-8")

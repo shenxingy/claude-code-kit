@@ -359,7 +359,17 @@ def _instructions(root: Path, cwd: Path) -> list[dict[str, Any]]:
 
     found: list[dict[str, Any]] = []
     for directory in chain:
-        for name in ("AGENTS.md", "CLAUDE.md"):
+        # Codex resolves agent instructions first-filename-wins with no merge:
+        # AGENTS.override.md is probed before AGENTS.md at every scope (home,
+        # codex-rs/codex-home/src/instructions/mod.rs:10; project,
+        # codex-rs/core/src/agents_md.rs:42 — verified at rust-v0.153.4), so a
+        # shadowed AGENTS.md is guidance Codex never reads and must not be
+        # reported as in effect. CLAUDE.md is Clade's own legacy fallback
+        # rather than a filename Codex resolves, so it is reported either way.
+        names = ["AGENTS.md", "CLAUDE.md"]
+        if (directory / "AGENTS.override.md").is_file():
+            names[0] = "AGENTS.override.md"
+        for name in names:
             path = directory / name
             if path.is_file():
                 found.append(

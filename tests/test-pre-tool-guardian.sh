@@ -32,14 +32,36 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
 section() { printf "\n${YELLOW}━━━ %s ━━━${NC}\n" "$1"; }
 
-# verdict <command> → prints "BLOCK" or "ALLOW"
-verdict() {
-  local out
-  out=$(python3 -c "
+PY_HOOK="$REPO_ROOT/plugins/clade/hooks/pre_tool_guardian.py"
+
+# payload <command> → the hook-input JSON both guardians read
+payload() {
+  python3 -c "
 import json,sys
-print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]}}))" "$1" \
-    | bash "$HOOK" 2>&1)
-  if [[ "$out" == *'"block"'* ]]; then echo "BLOCK"; else echo "ALLOW"; fi
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':sys.argv[1]}}))" "$1"
+}
+
+# classify <hook-output> → BLOCK | REWRITE | ALLOW
+#
+# REWRITE is a third verdict, not a flavour of ALLOW: the hook answers
+# {"decision":"allow","updatedInput":{...}} and the command that runs is not
+# the command that was proposed. A test that folded it into ALLOW could not
+# tell "we let it through" from "we defused it".
+classify() {
+  local out="$1"
+  if [[ "$out" == *'"block"'* || "$out" == *'"deny"'* ]]; then echo "BLOCK"
+  elif [[ "$out" == *'updatedInput'* ]]; then echo "REWRITE"
+  else echo "ALLOW"; fi
+}
+
+# verdict <command> → the shell guardian's verdict
+verdict() {
+  classify "$(payload "$1" | bash "$HOOK" 2>&1)"
+}
+
+# py_verdict <command> → the Codex guardian's verdict on the same input
+py_verdict() {
+  classify "$(payload "$1" | python3 "$PY_HOOK" 2>&1)"
 }
 
 assert_verdict() {
@@ -53,6 +75,29 @@ assert_verdict() {
   else
     TESTS_FAILED=$((TESTS_FAILED + 1))
     printf "  ${RED}✗${NC} %s (got=%s want=%s)\n" "$label" "$got" "$want"
+    printf "      cmd: %s\n" "$cmd"
+  fi
+  return 0
+}
+
+# assert_parity <label> <command>
+#
+# configs/codex-migration.json records the two guardians as a parity pair and
+# nothing had ever fed one command to both. They had drifted: the shell hook
+# blocked a recursive delete of /home, /etc, /usr, /var, /sys, /proc and /boot
+# and the Python mirror allowed every one of them. Aligning the regex once
+# would drift again; this is the check that keeps them honest.
+assert_parity() {
+  local label="$1" cmd="$2" sh py
+  TESTS_RUN=$((TESTS_RUN + 1))
+  sh=$(verdict "$cmd")
+  py=$(py_verdict "$cmd")
+  if [[ "$sh" == "$py" ]]; then
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+    printf "  ${GREEN}✓${NC} parity: %s (%s)\n" "$label" "$sh"
+  else
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    printf "  ${RED}✗${NC} parity: %s (shell=%s codex=%s)\n" "$label" "$sh" "$py"
     printf "      cmd: %s\n" "$cmd"
   fi
   return 0
@@ -96,6 +141,94 @@ assert_verdict "no rm at all"              'cp -rf /home/alexshen /tmp/backup'  
 # The tilde anchor must mean "home reference", not "the character ~".
 assert_verdict "trailing-tilde backup file" 'rm -rf /tmp/file~'                   ALLOW
 assert_verdict "tilde mid-path, not home"  'rm -rf /tmp/a~b/c'                    ALLOW
+
+# ─── Delete targets an agent actually writes ─────────────────────────
+#
+# The rule above matches the TEXT of the target, so it blocks what a human
+# types and allowed everything an agent writes. Measured 2026-09-05: every
+# case in this section was ALLOW on both guardians while the spelled-out
+# forms were blocked.
+#
+# The reason it matters is the shell lifecycle, not the regex. Every Bash tool
+# call is a fresh shell, so a variable assigned in an earlier call is unset in
+# this one and a delete against "$BUILD_DIR"/ expands to the filesystem root —
+# the exact string the true-positive section above asserts a BLOCK for. GNU
+# rm's --preserve-root does not help: the expanded argument is root-plus-star.
+#
+# The answer is the shape already in this hook for force-push: answer
+# {"decision":"allow","updatedInput":...} and hand back a command that is safe
+# to run. ${NAME:?...} runs unchanged when NAME is set and aborts naming
+# itself when it is not, so the fix costs a correct command nothing.
+section "Unresolved delete targets — rewritten, not allowed"
+assert_verdict "bare variable target"          'rm -rf $BUILD_DIR/'          REWRITE
+assert_verdict "quoted variable target"        'rm -rf "$BUILD_DIR"/'        REWRITE
+assert_verdict "braced variable target"        'rm -rf ${OUT}/'              REWRITE
+assert_verdict "variable target with a glob"   'rm -rf $OUT/*'               REWRITE
+assert_verdict "quoted variable plus glob"     'rm -rf "$DIR"/*'             REWRITE
+assert_verdict "variable target after a cd"    'cd /tmp/x && rm -rf $STALE/' REWRITE
+
+section "Unresolved delete targets — refused outright"
+# A command substitution and a bare glob have no rewrite that makes them safe:
+# there is no name to make required, and the value is decided at run time.
+assert_verdict "command substitution target"   'rm -rf $(pwd)/*'             BLOCK
+assert_verdict "glob relative to the cwd"      'rm -rf ./*'                  BLOCK
+assert_verdict "bare glob after a cd"          'cd /tmp/x && rm -rf *'       BLOCK
+
+section "Resolved or shell-owned targets — still allowed untouched"
+# The rewrite must cost a correct command nothing, or it becomes the next
+# thing people learn to work around.
+assert_verdict "variable assigned in the same command" \
+  'BUILD_DIR=/tmp/safe-build; rm -rf $BUILD_DIR/'                            ALLOW
+assert_verdict "variable exported in the same command" \
+  'export OUT=/tmp/out && rm -rf $OUT/*'                                     ALLOW
+assert_verdict "TMPDIR is set by the shell"     'rm -rf $TMPDIR/scratch'     ALLOW
+assert_verdict "literal path is not a variable" 'rm -rf /tmp/scratch/x'      ALLOW
+# $HOME is a shell-owned variable AND a catastrophic target. The block wins.
+assert_verdict "HOME stays blocked, not rewritten" 'rm -rf $HOME/x'          BLOCK
+# Rewriting a token inside a quoted string would corrupt the string.
+assert_verdict "delete quoted inside a single-quoted string" \
+  "echo 'rm -rf \$FOO/' >> notes.md"                                         ALLOW
+
+# Known limitation, pinned so it is visible rather than surprising.
+#
+# The rm rule has always been blind to command position: it fires wherever the
+# text appears, which is why `echo $(rm -rf <home>)` is asserted BLOCK above —
+# there the delete really would run. A double-quoted string carrying the same
+# text is not a command, but this rule cannot tell the two apart, so the
+# rewrite reaches it too. Single quotes ARE handled, because a rewrite inside
+# one would change bytes the shell was going to treat as literal.
+#
+# Making this exact would need command-position parsing for rm, the way the
+# pkill rule already does it. That is a larger change than this fix, and it
+# would have to keep the $() case blocking. Recorded here so the next reader
+# knows it is a decision, not an oversight.
+assert_verdict "double-quoted delete text is rewritten too (known limitation)" \
+  'echo "rm -rf $X" > note.txt'                                              REWRITE
+
+# ─── The two guardians agree ─────────────────────────────────────────
+section "Parity — the shell hook and the Codex mirror return the same verdict"
+assert_parity "home directory"            'rm -rf /home/alexshen'
+assert_parity "/etc"                      'rm -rf /etc/nginx'
+assert_parity "/usr"                      'rm -rf /usr/local'
+assert_parity "/var"                      'rm -rf /var/lib/x'
+assert_parity "/sys"                      'rm -rf /sys/kernel'
+assert_parity "/proc"                     'rm -rf /proc/1'
+assert_parity "/boot"                     'rm -rf /boot/efi'
+assert_parity "tilde"                     'rm -rf ~/projects'
+assert_parity "HOME"                      'rm -rf $HOME/x'
+assert_parity "bare variable target"      'rm -rf $BUILD_DIR/'
+assert_parity "quoted variable target"    'rm -rf "$BUILD_DIR"/'
+assert_parity "braced variable target"    'rm -rf ${OUT}/'
+assert_parity "variable plus glob"        'rm -rf $OUT/*'
+assert_parity "command substitution"      'rm -rf $(pwd)/*'
+assert_parity "glob relative to the cwd"  'rm -rf ./*'
+assert_parity "assigned in the same command" 'BUILD_DIR=/tmp/x; rm -rf $BUILD_DIR/'
+assert_parity "benign temp delete"        'rm -rf /tmp/scratch/x'
+assert_parity "rm without -f"             'rm -r /home/alexshen/tmpdir'
+assert_parity "force push to main"        'git push --force origin main'
+assert_parity "force push to a feature branch" 'git push --force origin feature/x'
+assert_parity "SQL DROP"                  'psql -c "DROP DATABASE prod"'
+assert_parity "ordinary command"          'git status'
 
 # ─── Other guardian rules still fire ─────────────────────────────────
 section "Other rules — unaffected by the rm change"
